@@ -37,64 +37,50 @@ ETI_SIGNAL_WORDS = {
 }
 
 
-def _extract_company(record):
-    name = (
-        record.get("denomination")
-        or (record.get("commercant") or {}).get("denomination", "")
-        or (record.get("personnemorale") or {}).get("denomination", "")
-        or ""
-    )
-    siren = str(record.get("siren") or "")
-    city = record.get("ville") or (record.get("tribunal") or {}).get("ville", "") or ""
-    return name.strip(), siren.strip(), city.strip()
+def _extract_bodacc_record(record):
+    name = record.get("commercant") or ""
+    registre = record.get("registre") or []
+    siren = registre[0].replace(" ", "") if registre else ""
+    city = record.get("ville") or ""
+    famille = record.get("familleavis_lib") or record.get("familleavis") or ""
+    content = record.get("acte") or record.get("jugement") or record.get("modificationsgenerales") or ""
+    if isinstance(content, dict):
+        content = json.dumps(content, ensure_ascii=False)
+    return name.strip(), siren, city.strip(), famille, str(content)[:300]
 
 
 def fetch_bodacc_events():
     since = (datetime.now(timezone.utc) - timedelta(hours=24)).strftime("%Y-%m-%d")
     events = []
 
-    queries = [
-        (
-            "annonces-commerciales",
-            f'dateparution >= date"{since}" AND (typeavis="Vente" OR typeavis="Cession" OR typeavis="Modification")',
-            "content",
-        ),
-        (
-            "annonces-de-procedure-collective",
-            f'dateparution >= date"{since}"',
-            "jugement",
-        ),
-    ]
+    # familleavis: vente=cessions, collective=procédures collectives, conciliation=difficulté
+    where = f"dateparution >= date'{since}' AND (familleavis='vente' OR familleavis='collective' OR familleavis='conciliation')"
 
-    for dataset, where, content_field in queries:
-        try:
-            params = urllib.parse.urlencode({
-                "where": where,
-                "limit": 60,
-                "order_by": "dateparution DESC",
+    try:
+        params = urllib.parse.urlencode({
+            "where": where,
+            "limit": 80,
+            "order_by": "dateparution DESC",
+            "select": "commercant,ville,registre,familleavis,familleavis_lib,dateparution,acte,jugement",
+        })
+        url = f"{BODACC_BASE}/annonces-commerciales/records?{params}"
+        req = urllib.request.Request(url, headers={"Accept": "application/json"})
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            data = json.loads(resp.read())
+        for record in data.get("results", []):
+            name, siren, city, famille, content = _extract_bodacc_record(record)
+            if not name:
+                continue
+            events.append({
+                "type": famille,
+                "company": name,
+                "siren": siren,
+                "city": city,
+                "date": record.get("dateparution", ""),
+                "content": content,
             })
-            url = f"{BODACC_BASE}/{dataset}/records?{params}"
-            req = urllib.request.Request(url, headers={"Accept": "application/json"})
-            with urllib.request.urlopen(req, timeout=20) as resp:
-                data = json.loads(resp.read())
-            for record in data.get("results", []):
-                name, siren, city = _extract_company(record)
-                if not name:
-                    continue
-                content = record.get(content_field) or record.get("contenu") or ""
-                if isinstance(content, dict):
-                    content = json.dumps(content, ensure_ascii=False)
-                events.append({
-                    "source": dataset,
-                    "type": record.get("typeavis") or record.get("typejugement") or "",
-                    "company": name,
-                    "siren": siren,
-                    "city": city,
-                    "date": record.get("dateparution", ""),
-                    "content": str(content)[:300],
-                })
-        except Exception as e:
-            print(f"  Bodacc {dataset} error: {e}")
+    except Exception as e:
+        print(f"  Bodacc error: {e}")
 
     return events
 
