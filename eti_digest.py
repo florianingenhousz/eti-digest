@@ -106,74 +106,109 @@ def fetch_rss_news():
     return articles
 
 
+CA_MIN = 20_000_000
+CA_MAX = 200_000_000
+PAPPERS_CALLS_MAX = 30
+
+
 def check_pappers(siren):
+    """Returns (ca_millions, effectif) or (None, None) if unavailable."""
     if not PAPPERS_API_KEY or not siren:
-        return None
+        return None, None
     try:
-        params = urllib.parse.urlencode({"api_token": PAPPERS_API_KEY, "siren": siren})
+        params = urllib.parse.urlencode({
+            "api_token": PAPPERS_API_KEY,
+            "siren": siren,
+            "chiffre_affaires": "true",
+        })
         url = f"https://api.pappers.fr/v2/entreprise?{params}"
         with urllib.request.urlopen(url, timeout=10) as resp:
             data = json.loads(resp.read())
         ca = data.get("chiffre_affaires")
-        if ca:
-            return round(ca / 1_000_000, 1)
+        effectif = data.get("effectif") or data.get("tranche_effectif_salarie")
+        ca_m = round(ca / 1_000_000, 1) if ca else None
+        return ca_m, effectif
     except Exception:
-        pass
-    return None
+        return None, None
+
+
+def filter_with_pappers(events):
+    """Enrich events with CA from Pappers, filter out confirmed non-ETIs."""
+    if not PAPPERS_API_KEY:
+        return events
+
+    calls = 0
+    filtered = []
+    for e in events:
+        if calls >= PAPPERS_CALLS_MAX:
+            # Keep remaining without validation rather than silently dropping them
+            filtered.append(e)
+            continue
+        siren = e.get("siren", "")
+        if not siren:
+            filtered.append(e)
+            continue
+        ca, effectif = check_pappers(siren)
+        calls += 1
+        if ca is not None:
+            if CA_MIN <= ca * 1_000_000 <= CA_MAX:
+                e["ca"] = ca
+                e["effectif"] = effectif
+                filtered.append(e)
+            # else: confirmed non-ETI → drop silently
+        else:
+            # No Pappers data → keep, Claude will judge
+            filtered.append(e)
+
+    print(f"  Pappers: {calls} calls, {len(filtered)}/{len(events)} events kept")
+    return filtered
 
 
 def build_digest(bodacc_events, rss_articles):
     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
-    bodacc_text = "\n".join(
-        f"- [{e['type']}] {e['company']} ({e['city']}, SIREN {e['siren']}) : {e['content']}"
-        for e in bodacc_events
-    ) or "Aucune annonce Bodacc aujourd'hui."
+    def fmt_event(e):
+        ca_str = f"{e[‘ca’]}M€ CA" if e.get("ca") else "CA non vérifié"
+        return f"- [{e[‘type’]}] {e[‘company’]} ({e[‘city’]}) | {ca_str} | SIREN {e[‘siren’]} : {e[‘content’]}"
 
+    bodacc_text = "\n".join(fmt_event(e) for e in bodacc_events) or "Aucune annonce Bodacc aujourd’hui."
     rss_text = "\n".join(
-        f"- [{e['source']}] {e['title']} — {e['summary']}"
+        f"- [{e[‘source’]}] {e[‘title’]} — {e[‘summary’]}"
         for e in rss_articles
-    ) or "Aucun article presse aujourd'hui."
+    ) or "Aucun article presse aujourd’hui."
 
-    prompt = f"""Tu es un expert en développement commercial B2B ciblant les ETI françaises (CA entre 20 et 200M€).
+    prompt = f"""Tu es un expert en développement commercial B2B ciblant les ETI françaises.
 
-Voici les signaux du jour :
+Voici les signaux du jour. Les entreprises listées ont été pré-filtrées : celles avec un CA vérifié sont dans la fourchette 20-200M€. Les autres ont un CA non vérifié.
 
 ## Annonces Bodacc (24 dernières heures)
 {bodacc_text}
 
-## Presse spécialisée (24 dernières heures)
+## Presse spécialisée
 {rss_text}
 
-Sélectionne 3 à 5 ETI qui traversent un moment de vie important et représentent une opportunité de prospection commerciale prioritaire.
+Sélectionne les 3 à 5 meilleures opportunités de prospection parmi ces signaux.
 
-Moments de vie cibles : transmission, cession, rachat, redressement judiciaire, changement de dirigeant, changement d'actionnaire, fusion-acquisition.
+Critères : moment de vie fort (transmission, cession, procédure collective, fusion, changement de dirigeant), fenêtre de prospection ouverte, entreprise de taille ETI.
 
-Critères de sélection :
-- CA estimé entre 20M€ et 200M€ (exclure les grands groupes et micro-PME)
-- Moment de vie clairement identifiable et récent (max 48h)
-- Fenêtre de prospection ouverte (nouveau décideur, nouveau contexte, besoin de conseil)
+IMPORTANT : réponds UNIQUEMENT avec les blocs ETI, sans introduction ni conclusion. Format strict :
 
-Pour chaque ETI retenue, génère un bloc avec ce format exact (apostrophes droites uniquement) :
+*[Emoji] [Nom entreprise]* — [Ville] | [CA]M€
+Signal : [4-6 mots]
+Contexte : [1 phrase]
+Opportunité : [1 phrase]
 
-*[Emoji] [Nom entreprise]* — [Ville] | ~[CA estimé]M€
-Signal : [type de moment en 4-6 mots]
-Contexte : [1 phrase factuelle sur ce qui se passe]
-Pourquoi prospecter : [1 phrase sur la fenêtre d'opportunité]
-
-Sépare chaque bloc par une ligne contenant uniquement "---SPLIT---".
-
-Si les données sont insuffisantes pour identifier des ETIs qualifiées, dis-le clairement plutôt que de forcer des résultats.
+Sépare chaque bloc par "---SPLIT---" seul sur sa ligne. Apostrophes droites uniquement (‘).
 """
 
     message = client.messages.create(
         model="claude-sonnet-4-6",
-        max_tokens=1500,
+        max_tokens=1200,
         messages=[{"role": "user", "content": prompt}],
     )
 
     text = message.content[0].text
-    text = text.replace("’", "'").replace("‘", "'")
+    text = text.replace("’", "’").replace("‘", "’")
     return text
 
 
@@ -204,6 +239,9 @@ def main():
     if not bodacc_events and not rss_articles:
         print("No data — skipping.")
         return
+
+    print("Filtering with Pappers...")
+    bodacc_events = filter_with_pappers(bodacc_events)
 
     print("Building digest with Claude...")
     digest = build_digest(bodacc_events, rss_articles)
