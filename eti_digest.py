@@ -22,18 +22,20 @@ PAPPERS_API_KEY = os.environ.get("PAPPERS_API_KEY", "").strip()
 
 BODACC_BASE = "https://bodacc-datadila.opendatasoft.com/api/explore/v2.1/catalog/datasets"
 
+# Google News RSS — works server-side, no auth needed
 RSS_FEEDS = [
-    ("Les Echos", "https://www.lesechos.fr/rss/rss_finance.xml"),
-    ("L'Usine Nouvelle", "https://www.usinenouvelle.com/flux-rss/actualite/flux.xml"),
-    ("BFM Business", "https://bfmbusiness.bfmtv.com/rss/info/flux-rss/flux-toutes-les-actualites/"),
+    ("Google News", "https://news.google.com/rss/search?q=cession+transmission+entreprise+France&hl=fr&gl=FR&ceid=FR:fr"),
+    ("Google News", "https://news.google.com/rss/search?q=rachat+acquisition+PME+ETI+France&hl=fr&gl=FR&ceid=FR:fr"),
+    ("Google News", "https://news.google.com/rss/search?q=redressement+judiciaire+entreprise+France&hl=fr&gl=FR&ceid=FR:fr"),
+    ("Google News", "https://news.google.com/rss/search?q=changement+dirigeant+PDG+entreprise+France&hl=fr&gl=FR&ceid=FR:fr"),
 ]
 
 ETI_SIGNAL_WORDS = {
     "cession", "transmission", "rachat", "acquisition", "reprise",
     "redressement", "liquidation", "sauvegarde", "restructur",
-    "dirigeant", "pdg", "directeur général", "président",
-    "actionnaire", "capital", "lbo", "private equity", "fonds d'investissement",
-    "fusion", "rapprochement", "nouveau directeur", "nouveau président",
+    "dirigeant", "pdg", "directeur general", "president",
+    "actionnaire", "capital", "lbo", "private equity",
+    "fusion", "rapprochement", "nouveau directeur",
 }
 
 
@@ -53,8 +55,9 @@ def fetch_bodacc_events():
     since = (datetime.now(timezone.utc) - timedelta(hours=24)).strftime("%Y-%m-%d")
     events = []
 
-    # familleavis: vente=cessions, collective=procédures collectives, conciliation=difficulté
-    where = f"dateparution >= date'{since}' AND (familleavis='vente' OR familleavis='collective' OR familleavis='conciliation')"
+    # familleavis: collective=procédures collectives (redressement/liquidation), conciliation=difficulté
+    # 'vente' retiré : concerne quasi-exclusivement des fonds de commerce TPE
+    where = f"dateparution >= date'{since}' AND (familleavis='collective' OR familleavis='conciliation')"
 
     try:
         params = urllib.parse.urlencode({
