@@ -168,12 +168,15 @@ def build_digest(bodacc_events, rss_articles):
     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
     def fmt_event(e):
-        ca_str = f"{e[‘ca’]}M€ CA" if e.get("ca") else "CA non vérifié"
-        return f"- [{e[‘type’]}] {e[‘company’]} ({e[‘city’]}) | {ca_str} | SIREN {e[‘siren’]} : {e[‘content’]}"
+        ca_str = str(e.get("ca", "")) + "M€ CA" if e.get("ca") else "CA non vérifié"
+        return "- [{}] {} ({}) | {} | SIREN {} : {}".format(
+            e.get("type", ""), e.get("company", ""), e.get("city", ""),
+            ca_str, e.get("siren", ""), e.get("content", "")
+        )
 
     bodacc_text = "\n".join(fmt_event(e) for e in bodacc_events) or "Aucune annonce Bodacc aujourd’hui."
     rss_text = "\n".join(
-        f"- [{e[‘source’]}] {e[‘title’]} — {e[‘summary’]}"
+        "- [{}] {} - {}".format(e.get("source", ""), e.get("title", ""), e.get("summary", ""))
         for e in rss_articles
     ) or "Aucun article presse aujourd’hui."
 
