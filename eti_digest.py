@@ -119,16 +119,23 @@ def check_pappers(siren):
         params = urllib.parse.urlencode({
             "api_token": PAPPERS_API_KEY,
             "siren": siren,
-            "chiffre_affaires": "true",
         })
-        url = f"https://api.pappers.fr/v2/entreprise?{params}"
+        url = "https://api.pappers.fr/v2/entreprise?" + params
         with urllib.request.urlopen(url, timeout=10) as resp:
             data = json.loads(resp.read())
         ca = data.get("chiffre_affaires")
         effectif = data.get("effectif") or data.get("tranche_effectif_salarie")
         ca_m = round(ca / 1_000_000, 1) if ca else None
+        if ca_m:
+            print(f"    Pappers {siren}: {ca_m}M€ CA")
+        else:
+            print(f"    Pappers {siren}: pas de CA ({data.get('denomination', '?')})")
         return ca_m, effectif
-    except Exception:
+    except urllib.error.HTTPError as e:
+        print(f"    Pappers {siren}: HTTP {e.code}")
+        return None, None
+    except Exception as ex:
+        print(f"    Pappers {siren}: erreur {ex}")
         return None, None
 
 
@@ -257,7 +264,7 @@ def main():
     send_whatsapp(header)
 
     for i, block in enumerate(blocks):
-        time.sleep(10)
+        time.sleep(15)
         print(f"  [{i+1}/{len(blocks)}] {block[:60]}...")
         send_whatsapp(block)
 
