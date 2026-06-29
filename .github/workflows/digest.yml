@@ -1,7 +1,8 @@
 name: ETI Prospection Digest
 
 on:
-  # Déclenché par cron-job.org via API — plus fiable que le cron GitHub natif
+  schedule:
+    - cron: '0 6 * * 1-5'
   workflow_dispatch:
 
 jobs:
